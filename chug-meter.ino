@@ -6,21 +6,20 @@
 #define SS_PIN 10
 #define RST_PIN 9
 
-const int buzzerPin = 8;           // Pin for the buzzer
-const int forceSensorPin = A3;     // Pin for the force sensor
-const unsigned long maxTimerDuration = 300000;  // Maximum timer duration in milliseconds (5 minutes)
-const int forceThreshold = 50; // Threshold for significant force change
+const int buzzerPin = 8;
+const int forceSensorPin = A3;
+const int forceThreshold = 50;
+const int initialForceValue = 200;
+const String AUTHORIZED_CARD_UID = "C3 90 57 95";
 
 MFRC522 mfrc522(SS_PIN, RST_PIN);
 LiquidCrystal lcd(6, 7, 2, 3, 4, 5);
 FSR fsr(forceSensorPin);
-volatile unsigned long timerStartTime = 0;  // Variable to store the timer start time
-volatile unsigned long lastTimerValue = 0;  // Variable to store the last timer value
-int initialForceValue = 200; // Initial force value for comparison
-bool isAuthorized = false; // Flag to track card authorization
-volatile bool isForceChangeDetected = false;  // Flag to track significant force change
-bool hasPlayedVictoryMelody = false;
-volatile int isSecondForceChangeDetected = 0;
+
+volatile unsigned long timerStartTime = 0;
+volatile unsigned long lastTimerValue = 0;
+volatile bool isForceChangeDetected = false;
+bool isAuthorized = false;
 
 void setup()
 {
@@ -29,25 +28,24 @@ void setup()
   lcd.begin(16, 2);
   lcd.print("Scan RFID Card");
 
-  pinMode(buzzerPin, OUTPUT);          // Initialize the buzzer pin as output
-  pinMode(forceSensorPin, INPUT);      // Initialize the force sensor pin as input
+  pinMode(buzzerPin, OUTPUT);
+  pinMode(forceSensorPin, INPUT);
 
   attachInterrupt(digitalPinToInterrupt(forceSensorPin), forceChangeInterrupt, CHANGE);
 }
 
 void loop()
 {
-  // Check if the timer has expired
-  if (timerStartTime != 0 && millis() - timerStartTime >= maxTimerDuration)
-  {
-    lcd.clear();
-    lcd.begin(16, 2);
-    lcd.print("Timer expired");
-    // Perform any actions you want when the timer expires here
-    timerStartTime = 0;  // Reset the timer start time
-  }
+  checkForceChange();
 
-  // Check if the force value exceeds the threshold and the timer is not already started
+  displayTimer();
+
+  checkRFIDCard();
+}
+
+void checkForceChange()
+{
+  // Check if the force value has changed significantly and the timer is not already started
   if ((fsr.getForce() - initialForceValue >= forceThreshold) || (fsr.getForce() - initialForceValue <= forceThreshold) && timerStartTime == 0)
   {
     // Start the timer
@@ -55,7 +53,8 @@ void loop()
     timerStartTime = millis();
     sei();
   }
-   // Check if the force value has changed significantly and the timer is already started
+  
+  // Check if the force value has changed significantly and the timer is already started
   if (timerStartTime != 0 && (fsr.getForce() - initialForceValue >= forceThreshold) || (fsr.getForce() - initialForceValue <= forceThreshold) && !isForceChangeDetected)
   {
     // Stop the timer and store the last timer value
@@ -65,22 +64,14 @@ void loop()
     isForceChangeDetected = true;
     sei();
   }
+}
 
-  // Display the timer on the LCD and perform other actions if the timer is started and authorized
+void displayTimer()
+{
+  // Display the timer on the LCD if the timer is started and action is authorized by RFID
   if (isAuthorized && timerStartTime != 0)
   {
-    // Calculate elapsed time
     unsigned long elapsedTime = millis() - timerStartTime;
-
-    // Check if the elapsed time exceeds the maximum duration
-    if (elapsedTime >= maxTimerDuration)
-    {
-      lcd.clear();
-      lcd.begin(16, 2);
-      lcd.print("Timer reached 5 min");
-      // Perform any actions you want when the timer reaches 5 minutes here
-      timerStartTime = 0; // Reset the timer start time
-    }
 
     // Calculate minutes, seconds, and milliseconds
     unsigned int minutes = elapsedTime / 60000;
@@ -97,42 +88,39 @@ void loop()
     // Display the timer string on the LCD
     lcd.print("Timer: " + timerString);
   }
+}
 
-  if (!mfrc522.PICC_IsNewCardPresent())
+void checkRFIDCard() 
+{
+  if (!mfrc522.PICC_IsNewCardPresent() || !mfrc522.PICC_ReadCardSerial())
   {
     return;
   }
 
-  if (!mfrc522.PICC_ReadCardSerial())
-  {
-    return;
-  }
-
-  lcd.clear();
-  lcd.begin(16, 2);
-  lcd.print("UID tag :");
   String content = "";
+  // Obtain the UID of the RFID card
   for (byte i = 0; i < mfrc522.uid.size; i++)
   {
-    lcd.setCursor(0, 1);
-    lcd.print(mfrc522.uid.uidByte[i] < 0x10 ? " 0" : " ");
-    lcd.print(mfrc522.uid.uidByte[i], HEX);
     content.concat(String(mfrc522.uid.uidByte[i] < 0x10 ? " 0" : " "));
     content.concat(String(mfrc522.uid.uidByte[i], HEX));
   }
+  
   lcd.clear();
   lcd.begin(16, 2);
   lcd.print("Message : ");
+  
   content.toUpperCase();
-  if (content.substring(1) == "C3 90 57 95")  // Please change to your card's UID
+  // Check if the UID matches the authorized card's UID
+  if (content.substring(1) == AUTHORIZED_CARD_UID)
   {
     lcd.setCursor(0, 1);
     lcd.print("Authorized");
-    activateAuthorizedSound();  // Activate the buzzer for 1 second
+    activateAuthorizedSound();
+    
     cli();
     timerStartTime = 0;
     isForceChangeDetected = false;
-    isAuthorized = true; // Set the authorization flag to true
+    isAuthorized = true;
     sei();
   }
   else
@@ -143,10 +131,11 @@ void loop()
     delay(2000);
     lcd.clear();
     setup();
+    
     cli();
     timerStartTime = 0;
     isForceChangeDetected = false;
-    isAuthorized = false; // Set the authorization flag to false
+    isAuthorized = false;
     sei();
   }
 }
@@ -164,7 +153,7 @@ void activateAuthorizedSound()
 void activateDeniedSound()
 {
   tone(buzzerPin, 400, 1000);
-}
+}  
 
 void forceChangeInterrupt()
 {
